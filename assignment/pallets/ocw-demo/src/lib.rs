@@ -322,6 +322,8 @@ impl<T: Trait> Module<T> {
 
 		if let Ok(_guard) = lock.try_lock() {
 			match Self::fetch_dot_price() {
+				// offchain unsigned tx with signed payload
+				// reason: no transaction fee
 				Ok(dot_price) => { Self::offchain_unsigned_tx_signed_payload_dot(dot_price); }
 				Err(err) => { return Err(err); }
 			}
