@@ -169,7 +169,7 @@ decl_storage! {
 		Numbers get(fn numbers): VecDeque<u32>;
 
 		/// A vector of recent submitted price by usd
-		PirceLogs get(fn logs): VecDeque<I56F8>;
+		PriceLogs get(fn logs): VecDeque<I56F8>;
 	}
 }
 
@@ -305,7 +305,7 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn append_or_replace_price(price: I56F8) {
-		PirceLogs::mutate(|logs| {
+		PriceLogs::mutate(|logs| {
 			if logs.len() == NUM_VEC_LEN {
 				let _ = logs.pop_front();
 			}
