@@ -213,3 +213,24 @@ fn test_offchain_unsigned_tx() {
 		assert_eq!(tx.call, Call::submit_number_unsigned(num));
 	});
 }
+
+#[test]
+fn submit_dot_info_works() {
+	let (mut t, _, _) = ExternalityBuilder::build();
+	t.execute_with(|| {
+		use fixed::types::I56F8;
+
+		let acct: <TestRuntime as system::Trait>::AccountId = Default::default();
+		let price_usd = I56F8::from_num(16.249);
+
+		assert_ok!(OcwDemo::fetch_dot_info());
+
+		// A number is inserted to <Numbers> vec
+		assert_eq!(<PriceLogs>::get(), vec![price_usd]);
+
+		// An event is emitted
+		assert!(System::events()
+			.iter()
+			.any(|er| er.event == TestEvent::ocw_demo(RawEvent::NewPrice(None, price_usd))));
+	});
+}
