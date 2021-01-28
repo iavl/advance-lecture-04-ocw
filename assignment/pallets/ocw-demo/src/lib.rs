@@ -539,14 +539,14 @@ impl<T: Trait> Module<T> {
 
 	fn offchain_unsigned_tx_signed_payload_dot(price: I56F8) -> Result<(), Error<T>> {
 		// Retrieve the signer to sign the payload
-    let signer = Signer::<T, T::AuthorityId>::any_account();
+    	let signer = Signer::<T, T::AuthorityId>::any_account();
 
 		// `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(), ()>)>`.
 		//   Similar to `send_signed_transaction`, they account for:
 		//   - `None`: no account is available for sending transaction
 		//   - `Some((account, Ok(())))`: transaction is successfully sent
 		//   - `Some((account, Err(())))`: error occured when sending the transaction
-    if let Some((_, res)) = signer.send_unsigned_transaction(
+    	if let Some((_, res)) = signer.send_unsigned_transaction(
     			|acct| DotPayload { price, public: acct.public.clone() },
     			Call::submit_dot_info_with_signed_payload
     		) {
@@ -554,10 +554,10 @@ impl<T: Trait> Module<T> {
     				debug::error!("Failed in offchain_unsigned_tx_signed_payload_dot");
     				<Error<T>>::OffchainUnsignedTxSignedPayloadDotError
     			});
-    		}
+    	}
 
-    		debug::error!("No local account available");
-    		Err(<Error<T>>::NoLocalAcctForSigning)
+		debug::error!("No local account available");
+		Err(<Error<T>>::NoLocalAcctForSigning)
 	}
 
 	fn offchain_unsigned_tx_signed_payload(block_number: T::BlockNumber) -> Result<(), Error<T>> {
