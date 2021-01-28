@@ -38,6 +38,9 @@ use sp_std::{
 
 use serde::{Deserialize, Deserializer};
 
+use serde_json::Value;
+use fixed::types::I56F8;
+
 /// Defines application identifier for crypto keys of this module.
 ///
 /// Every module that deals with signatures needs to declare its unique identifier for
@@ -54,6 +57,8 @@ pub const UNSIGNED_TXS_PRIORITY: u64 = 100;
 pub const HTTP_REMOTE_REQUEST: &str = "https://api.github.com/orgs/substrate-developer-hub";
 pub const HTTP_HEADER_USER_AGENT: &str = "jimmychu0807";
 
+// We are fetch information about DOT
+pub const HTTP_REMOTE_REQUEST_DOT: &str = "https://api.coincap.io/v2/assets/polkadot";
 
 pub const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
 pub const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
@@ -98,6 +103,18 @@ pub struct Payload<Public> {
 }
 
 impl <T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
+	fn public(&self) -> T::Public {
+		self.public.clone()
+	}
+}
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct DotPayload<Public> {
+	price: I56F8,
+	public: Public
+}
+
+impl <T: SigningTypes> SignedPayload<T> for DotPayload<T::Public> {
 	fn public(&self) -> T::Public {
 		self.public.clone()
 	}
@@ -150,6 +167,9 @@ decl_storage! {
 	trait Store for Module<T: Trait> as Example {
 		/// A vector of recently submitted numbers. Bounded by NUM_VEC_LEN
 		Numbers get(fn numbers): VecDeque<u32>;
+
+		/// A vector of recent submitted price by usd
+		PirceLogs get(fn logs): VecDeque<I56F8>;
 	}
 }
 
@@ -161,6 +181,8 @@ decl_event!(
 	{
 		/// Event generated when a new number is accepted to contribute to the average.
 		NewNumber(Option<AccountId>, u32),
+
+		NewPrice(Option<AccountId>, I56F8),
 	}
 );
 
@@ -179,8 +201,13 @@ decl_error! {
 		// Error returned when making unsigned transactions with signed payloads in off-chain worker
 		OffchainUnsignedTxSignedPayloadError,
 
+		OffchainUnsignedTxSignedPayloadDotError,
+
 		// Error returned when fetching github info
 		HttpFetchingError,
+
+		// Error returned when parsing dot price
+		HttpResultParseError,
 	}
 }
 
@@ -223,6 +250,21 @@ decl_module! {
 			Ok(())
 		}
 
+		#[weight = 10000]
+		pub fn submit_dot_info_with_signed_payload(origin, dot_payload: DotPayload<T::Public>,
+			_signature: T::Signature) -> DispatchResult
+		{
+			let _ = ensure_none(origin)?;
+			// we don't need to verify the signature here because it has been verified in
+			//   `validate_unsigned` function when sending out the unsigned tx.
+			let DotPayload { price, public } = dot_payload;
+			debug::info!("submit_dot_info_with_signed_payload: ({}, {:?})", price, public);
+			Self::append_or_replace_price(price);
+
+			Self::deposit_event(RawEvent::NewPrice(None, price));
+			Ok(())
+		}
+
 		fn offchain_worker(block_number: T::BlockNumber) {
 			debug::info!("Entering off-chain worker");
 
@@ -260,6 +302,31 @@ impl<T: Trait> Module<T> {
 			numbers.push_back(number);
 			debug::info!("Number vector: {:?}", numbers);
 		});
+	}
+
+	fn append_or_replace_price(price: I56F8) {
+		PirceLogs::mutate(|logs| {
+			if logs.len() == NUM_VEC_LEN {
+				let _ = logs.pop_front();
+			}
+			logs.push_back(price);
+			debug::info!("price log vector: {:?}", logs);
+		});
+	}
+
+	fn fetch_dot_info() -> Result<(), Error<T>> {
+		let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
+  		b"offchain-demo-dot::lock", LOCK_BLOCK_EXPIRATION,
+  		rt_offchain::Duration::from_millis(LOCK_TIMEOUT_EXPIRATION)
+  		);
+
+		if let Ok(_guard) = lock.try_lock() {
+			match Self::fetch_dot_price() {
+				Ok(dot_price) => { Self::offchain_unsigned_tx_signed_payload_dot(dot_price); }
+				Err(err) => { return Err(err); }
+			}
+		}
+		Ok(())
 	}
 
 	/// Check if we have fetched github info before. If yes, we can use the cached version
@@ -313,6 +380,25 @@ impl<T: Trait> Module<T> {
 		Ok(())
 	}
 
+	/// Fetch dot price
+	fn fetch_dot_price() -> Result<I56F8, Error<T>> {
+		let resp_bytes = Self::fetch_dot_from_remote().map_err(|e| {
+			debug::error!("fetch_dot_from_remote error: {:?}", e);
+			<Error<T>>::HttpFetchingError
+		})?;
+
+		let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
+		// Print out our fetched JSON string
+		debug::info!("{}", resp_str);
+
+		let v: Value = serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::HttpResultParseError)?;
+		let s : &str = v["data"]["priceUsd"].as_str().unwrap();
+
+		let f: f64 = serde_json::from_str(s).map_err(|_| <Error<T>>::HttpResultParseError)?;
+		let price = I56F8::from_num(f);
+		Ok(price)
+	}
+
 	/// Fetch from remote and deserialize the JSON to a struct
 	fn fetch_n_parse() -> Result<GithubInfo, Error<T>> {
 		let resp_bytes = Self::fetch_from_remote().map_err(|e| {
@@ -329,6 +415,42 @@ impl<T: Trait> Module<T> {
 			serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::HttpFetchingError)?;
 		Ok(gh_info)
 	}
+
+		fn fetch_dot_from_remote() -> Result<Vec<u8>, Error<T>> {
+  		debug::info!("sending request to: {}", HTTP_REMOTE_REQUEST_DOT);
+
+  		// Initiate an external HTTP GET request. This is using high-level wrappers from `sp_runtime`.
+  		let request = rt_offchain::http::Request::get(HTTP_REMOTE_REQUEST_DOT);
+
+  		// Keeping the offchain worker execution time reasonable, so limiting the call to be within 3s.
+  		let timeout = sp_io::offchain::timestamp()
+  			.add(rt_offchain::Duration::from_millis(FETCH_TIMEOUT_PERIOD));
+
+  		// For github API request, we also need to specify `user-agent` in http request header.
+  		//   See: https://developer.github.com/v3/#user-agent-required
+  		let pending = request
+  			.add_header("User-Agent", HTTP_HEADER_USER_AGENT)
+  			.deadline(timeout) // Setting the timeout time
+  			.send() // Sending the request out by the host
+  			.map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+  		// By default, the http request is async from the runtime perspective. So we are asking the
+  		//   runtime to wait here.
+  		// The returning value here is a `Result` of `Result`, so we are unwrapping it twice by two `?`
+  		//   ref: https://substrate.dev/rustdocs/v2.0.0/sp_runtime/offchain/http/struct.PendingRequest.html#method.try_wait
+  		let response = pending
+  			.try_wait(timeout)
+  			.map_err(|_| <Error<T>>::HttpFetchingError)?
+  			.map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+  		if response.code != 200 {
+  			debug::error!("Unexpected http request status code: {}", response.code);
+  			return Err(<Error<T>>::HttpFetchingError);
+  		}
+
+  		// Next we fully read the response body and collect it to a vector of bytes.
+  		Ok(response.body().collect::<Vec<u8>>())
+  	}
 
 	/// This function uses the `offchain::http` API to query the remote github information,
 	///   and returns the JSON response as vector of bytes.
@@ -415,6 +537,29 @@ impl<T: Trait> Module<T> {
 			})
 	}
 
+	fn offchain_unsigned_tx_signed_payload_dot(price: I56F8) -> Result<(), Error<T>> {
+		// Retrieve the signer to sign the payload
+    let signer = Signer::<T, T::AuthorityId>::any_account();
+
+		// `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(), ()>)>`.
+		//   Similar to `send_signed_transaction`, they account for:
+		//   - `None`: no account is available for sending transaction
+		//   - `Some((account, Ok(())))`: transaction is successfully sent
+		//   - `Some((account, Err(())))`: error occured when sending the transaction
+    if let Some((_, res)) = signer.send_unsigned_transaction(
+    			|acct| DotPayload { price, public: acct.public.clone() },
+    			Call::submit_dot_info_with_signed_payload
+    		) {
+    			return res.map_err(|_| {
+    				debug::error!("Failed in offchain_unsigned_tx_signed_payload_dot");
+    				<Error<T>>::OffchainUnsignedTxSignedPayloadDotError
+    			});
+    		}
+
+    		debug::error!("No local account available");
+    		Err(<Error<T>>::NoLocalAcctForSigning)
+	}
+
 	fn offchain_unsigned_tx_signed_payload(block_number: T::BlockNumber) -> Result<(), Error<T>> {
 		// Retrieve the signer to sign the payload
 		let signer = Signer::<T, T::AuthorityId>::any_account();
@@ -461,6 +606,12 @@ impl<T: Trait> frame_support::unsigned::ValidateUnsigned for Module<T> {
 				}
 				valid_tx(b"submit_number_unsigned_with_signed_payload".to_vec())
 			},
+			Call::submit_dot_info_with_signed_payload(ref payload, ref signature) => {
+      	if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
+      		return InvalidTransaction::BadProof.into();
+      	}
+      	valid_tx(b"submit_dot_info_with_signed_payload".to_vec())
+      },
 			_ => InvalidTransaction::Call.into(),
 		}
 	}
