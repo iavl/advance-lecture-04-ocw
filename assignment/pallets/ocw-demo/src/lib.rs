@@ -315,6 +315,8 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn fetch_dot_info() -> Result<(), Error<T>> {
+		debug::info!("fetch dot info!");
+
 		let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
   		b"offchain-demo-dot::lock", LOCK_BLOCK_EXPIRATION,
   		rt_offchain::Duration::from_millis(LOCK_TIMEOUT_EXPIRATION)
@@ -335,6 +337,7 @@ impl<T: Trait> Module<T> {
 	///   stored in off-chain worker storage `storage`. If not, we fetch the remote info and
 	///   write the info into the storage for future retrieval.
 	fn fetch_github_info() -> Result<(), Error<T>> {
+		debug::info!("fetch github info ...");
 		// Create a reference to Local Storage value.
 		// Since the local storage is common for all offchain workers, it's a good practice
 		// to prepend our entry with the pallet name.
