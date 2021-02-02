@@ -273,7 +273,7 @@ decl_module! {
 			// 2. Sending unsigned transaction from ocw
 			// 3. Sending unsigned transactions with signed payloads from ocw
 			// 4. Fetching JSON via http requests in ocw
-			const TX_TYPES: u32 = 4;
+			const TX_TYPES: u32 = 5;
 			let modu = block_number.try_into().map_or(TX_TYPES, |bn: usize| (bn as u32) % TX_TYPES);
 			let result = match modu {
 				0 => Self::offchain_signed_tx(block_number),
@@ -315,7 +315,7 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn fetch_dot_info() -> Result<(), Error<T>> {
-		debug::info!("fetch dot info!");
+		debug::info!("---------- fetch dot info! ----------");
 
 		let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
   		b"offchain-demo-dot::lock", LOCK_BLOCK_EXPIRATION,
